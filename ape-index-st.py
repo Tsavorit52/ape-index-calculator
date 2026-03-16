@@ -40,6 +40,9 @@ class SharedFlags:
         self.pixels_per_meter = None
         self.last_marker_time = 0
         self.show_frozen_text = False
+        self.auto_freeze = True
+        self.manual_freeze = False
+        self.toggle_freeze = False
         self.lock = threading.Lock()
 
 if 'shared_flags' not in st.session_state:
@@ -59,9 +62,13 @@ with cols[0]:
         with shared_flags.lock:
             shared_flags.mirror = not shared_flags.mirror
 with cols[1]:
-    if st.button("Unfreeze", help="Resume live video feed"):
+    if st.button("Toggle Freeze", help="Toggle freeze/unfreeze the video"):
         with shared_flags.lock:
-            shared_flags.unfreeze = True
+            shared_flags.toggle_freeze = True
+
+auto_freeze = st.checkbox("Enable Auto Freeze", value=shared_flags.auto_freeze)
+with shared_flags.lock:
+    shared_flags.auto_freeze = auto_freeze
 
 # -------------------------
 # Helpers
@@ -131,11 +138,24 @@ class PoseProcessor(VideoProcessorBase):
         with shared_flags.lock:
             mirror_flag = shared_flags.mirror
             unfreeze_flag = shared_flags.unfreeze
+            manual_freeze_flag = shared_flags.manual_freeze
+            toggle_freeze_flag = shared_flags.toggle_freeze
+            auto_freeze_flag = shared_flags.auto_freeze
             is_frozen = shared_flags.is_frozen
             frozen_frame = shared_flags.frozen_frame
             pose_start_time = shared_flags.pose_start_time
             if unfreeze_flag:
                 shared_flags.unfreeze = False
+            if toggle_freeze_flag:
+                shared_flags.toggle_freeze = False
+
+        # Handle toggle freeze
+        if toggle_freeze_flag:
+            with shared_flags.lock:
+                if shared_flags.is_frozen:
+                    shared_flags.unfreeze = True
+                else:
+                    shared_flags.manual_freeze = True
 
         # Unfreeze
         if unfreeze_flag:
@@ -229,8 +249,15 @@ class PoseProcessor(VideoProcessorBase):
                     # Draw bell curve
                     draw_bell_curve(display_frame, ape_index_avg)
 
+        # Manual freeze
+        if manual_freeze_flag:
+            with shared_flags.lock:
+                shared_flags.manual_freeze = False
+                shared_flags.is_frozen = True
+                shared_flags.frozen_frame = display_frame.copy()
+
         # Freeze logic
-        if t_pose_detected:
+        if t_pose_detected and auto_freeze_flag:
             with shared_flags.lock:
                 if shared_flags.pose_start_time is None:
                     shared_flags.pose_start_time = time.time()
