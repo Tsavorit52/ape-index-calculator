@@ -1,6 +1,6 @@
 streamlit>=1.33
 streamlit-webrtc>=0.47
 opencv-python-headless>=4.8
-mediapipe>=0.10.14
+mediapipe==0.10.14
 numpy>=1.24
 Pillow>=10.0
