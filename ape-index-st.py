@@ -9,7 +9,7 @@ from collections import deque
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 
 st.set_page_config(layout="wide")
-st.title("🦍 Ape Index Calculator (Webcam HD + ArUco Calibration)")
+st.title("Ape Index Calculator")
 
 # -------------------------
 # Constants
@@ -18,7 +18,7 @@ APEX_MEAN = 1.0
 APEX_SD = 0.05
 BUFFER_SIZE = 20
 FREEZE_DURATION = 1.5  # seconds T-pose must hold to freeze
-MARKER_SIZE_M = 0.10   # 10 cm reference ArUco marker
+MARKER_SIZE_M = 0.10   # 10 cm ArUco marker
 
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
@@ -36,12 +36,11 @@ def detect_aruco(frame_bgr):
         c = corners[0][0]
         width_px = np.linalg.norm(c[0]-c[1])
         cv2.polylines(frame_bgr, [c.astype(int)], True, (255,255,0), 2)
-        pixels_per_meter = width_px / MARKER_SIZE_M
-        return pixels_per_meter
+        return width_px / MARKER_SIZE_M
     return None
 
 # -------------------------
-# Helper functions
+# Helpers
 # -------------------------
 def to_pixel(landmark, width, height):
     return np.array([landmark.x * width, landmark.y * height])
@@ -54,7 +53,7 @@ def is_t_pose(lm_px, tol_px=80):
     r_sh = lm_px[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
     l_wr = lm_px[mp_pose.PoseLandmark.LEFT_WRIST.value]
     r_wr = lm_px[mp_pose.PoseLandmark.RIGHT_WRIST.value]
-    return abs(l_sh[1]-l_wr[1])<tol_px and abs(r_sh[1]-r_wr[1])<tol_px
+    return abs(l_sh[1]-l_wr[1]) < tol_px and abs(r_sh[1]-r_wr[1]) < tol_px
 
 def draw_bell_curve(frame, ape_index):
     h, w, _ = frame.shape
@@ -75,6 +74,24 @@ def draw_bell_curve(frame, ape_index):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
 
 # -------------------------
+# Session state flags
+# -------------------------
+if "mirror" not in st.session_state:
+    st.session_state["mirror"] = False
+if "unfreeze" not in st.session_state:
+    st.session_state["unfreeze"] = False
+
+# -------------------------
+# UI Buttons
+# -------------------------
+cols = st.columns([3,1])
+with cols[1]:
+    if st.button("Mirror Webcam"):
+        st.session_state["mirror"] = not st.session_state["mirror"]
+    if st.button("Unfreeze"):
+        st.session_state["unfreeze"] = True
+
+# -------------------------
 # Video Processor
 # -------------------------
 class PoseProcessor(VideoProcessorBase):
@@ -88,12 +105,19 @@ class PoseProcessor(VideoProcessorBase):
         self.is_frozen = False
 
     def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        # Force HD
-        img = cv2.resize(img, (1280, 720))
+        # Thread-safe copy of UI flags
+        mirror_flag = st.session_state.get("mirror", False)
+        unfreeze_flag = st.session_state.get("unfreeze", False)
 
-        # Mirror dynamically from session state
-        if st.session_state.get("mirror", False):
+        # Unfreeze logic
+        if unfreeze_flag:
+            self.is_frozen = False
+            self.frozen_frame = None
+            st.session_state["unfreeze"] = False
+
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.resize(img, (1280, 720))
+        if mirror_flag:
             img = cv2.flip(img, 1)
 
         h, w, _ = img.shape
@@ -140,9 +164,7 @@ class PoseProcessor(VideoProcessorBase):
                              tuple(ankle_mid.astype(int)), (0,0,255), 3)
                     cv2.line(img, (int(left_x), int(l_wrist[1])), (int(right_x), int(r_wrist[1])), (255,0,0), 3)
 
-        # -------------------------
         # Freeze logic
-        # -------------------------
         if t_pose_detected:
             if self.pose_start_time is None:
                 self.pose_start_time = time.time()
@@ -153,17 +175,9 @@ class PoseProcessor(VideoProcessorBase):
         else:
             self.pose_start_time = None
 
-        # Handle unfreeze dynamically
-        if st.session_state.get("unfreeze", False):
-            self.is_frozen = False
-            self.frozen_frame = None
-            st.session_state["unfreeze"] = False
-
         final_frame = self.frozen_frame if self.is_frozen and self.frozen_frame is not None else img
 
-        # -------------------------
         # ArUco calibration
-        # -------------------------
         pixels_per_meter = detect_aruco(final_frame)
 
         # Overlay measurements
@@ -176,42 +190,21 @@ class PoseProcessor(VideoProcessorBase):
                 cv2.putText(final_frame, f"Arm span: {arm_span_m:.2f} m", (30,150),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
             else:
-                # fallback in pixels
                 cv2.putText(final_frame, f"Height: {int(height_px)} px", (30,120),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
                 cv2.putText(final_frame, f"Arm span: {int(arm_span_px)} px", (30,150),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
-
-            # Bell curve & Ape Index
             draw_bell_curve(final_frame, ape_index_avg)
             percentile = int((0.5*(1+math.erf((ape_index_avg-APEX_MEAN)/(APEX_SD*math.sqrt(2)))))*100)
             cv2.putText(final_frame, f"Ape Index: {ape_index_avg:.2f}", (30,40), cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
             cv2.putText(final_frame, f"Percentile: {percentile}th", (30,80), cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,0,255),2)
 
-        # Draw * if frozen
+        # Frozen indicator
         if self.is_frozen:
             cv2.putText(final_frame, "*", (final_frame.shape[1]-40, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
 
         return av.VideoFrame.from_ndarray(final_frame, format="bgr24")
-
-# -------------------------
-# Initialize session state
-# -------------------------
-if "mirror" not in st.session_state:
-    st.session_state["mirror"] = False
-if "unfreeze" not in st.session_state:
-    st.session_state["unfreeze"] = False
-
-# -------------------------
-# UI Buttons
-# -------------------------
-cols = st.columns([3,1])
-with cols[1]:
-    if st.button("Mirror Webcam"):
-        st.session_state["mirror"] = not st.session_state.get("mirror", False)
-    if st.button("Unfreeze"):
-        st.session_state["unfreeze"] = True
 
 # -------------------------
 # Start WebRTC
