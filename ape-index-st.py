@@ -9,7 +9,7 @@ from collections import deque
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 
 st.set_page_config(layout="wide")
-st.title("🦍 Ape Index Calculator (Webcam HD)")
+st.title("🦍 Ape Index Calculator (Webcam HD + ArUco Calibration)")
 
 # -------------------------
 # Constants
@@ -18,9 +18,27 @@ APEX_MEAN = 1.0
 APEX_SD = 0.05
 BUFFER_SIZE = 20
 FREEZE_DURATION = 1.5  # seconds T-pose must hold to freeze
+MARKER_SIZE_M = 0.10   # 10 cm reference ArUco marker
 
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
+
+# -------------------------
+# ArUco setup
+# -------------------------
+ARUCO_DICT = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+aruco_detector = cv2.aruco.ArucoDetector(ARUCO_DICT)
+
+def detect_aruco(frame_bgr):
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    corners, ids, _ = aruco_detector.detectMarkers(gray)
+    if ids is not None and len(ids) > 0:
+        c = corners[0][0]
+        width_px = np.linalg.norm(c[0]-c[1])
+        cv2.polylines(frame_bgr, [c.astype(int)], True, (255,255,0), 2)
+        pixels_per_meter = width_px / MARKER_SIZE_M
+        return pixels_per_meter
+    return None
 
 # -------------------------
 # Helper functions
@@ -84,6 +102,8 @@ class PoseProcessor(VideoProcessorBase):
 
         t_pose_detected = False
         ape_index_avg = None
+        height_px = None
+        arm_span_px = None
 
         if result.pose_landmarks:
             lm = result.pose_landmarks.landmark
@@ -141,8 +161,28 @@ class PoseProcessor(VideoProcessorBase):
 
         final_frame = self.frozen_frame if self.is_frozen and self.frozen_frame is not None else img
 
-        # Overlay measurements & bell curve
-        if ape_index_avg is not None:
+        # -------------------------
+        # ArUco calibration
+        # -------------------------
+        pixels_per_meter = detect_aruco(final_frame)
+
+        # Overlay measurements
+        if ape_index_avg is not None and height_px and arm_span_px:
+            if pixels_per_meter:
+                height_m = height_px / pixels_per_meter
+                arm_span_m = arm_span_px / pixels_per_meter
+                cv2.putText(final_frame, f"Height: {height_m:.2f} m", (30,120),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                cv2.putText(final_frame, f"Arm span: {arm_span_m:.2f} m", (30,150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
+            else:
+                # fallback in pixels
+                cv2.putText(final_frame, f"Height: {int(height_px)} px", (30,120),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
+                cv2.putText(final_frame, f"Arm span: {int(arm_span_px)} px", (30,150),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
+
+            # Bell curve & Ape Index
             draw_bell_curve(final_frame, ape_index_avg)
             percentile = int((0.5*(1+math.erf((ape_index_avg-APEX_MEAN)/(APEX_SD*math.sqrt(2)))))*100)
             cv2.putText(final_frame, f"Ape Index: {ape_index_avg:.2f}", (30,40), cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
