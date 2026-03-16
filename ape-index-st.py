@@ -3,20 +3,10 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import av
-import math
 import time
 from collections import deque
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
-import sys, os
-
-# -------------------------
-# Mute 'missing ScriptRunContext!' warning
-# -------------------------
-class DummyStderr:
-    def write(self, *args, **kwargs): pass
-    def flush(self): pass
-
-sys.stderr = DummyStderr()
+import threading
 
 # -------------------------
 # Constants
@@ -31,12 +21,15 @@ mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
 # -------------------------
-# Session state flags
+# Thread-safe shared flags
 # -------------------------
-if "mirror" not in st.session_state:
-    st.session_state["mirror"] = False
-if "unfreeze" not in st.session_state:
-    st.session_state["unfreeze"] = False
+class SharedFlags:
+    def __init__(self):
+        self.mirror = False
+        self.unfreeze = False
+        self.lock = threading.Lock()
+
+shared_flags = SharedFlags()
 
 # -------------------------
 # Buttons
@@ -44,9 +37,11 @@ if "unfreeze" not in st.session_state:
 cols = st.columns([3,1])
 with cols[1]:
     if st.button("Mirror Webcam"):
-        st.session_state["mirror"] = not st.session_state["mirror"]
+        with shared_flags.lock:
+            shared_flags.mirror = not shared_flags.mirror
     if st.button("Unfreeze"):
-        st.session_state["unfreeze"] = True
+        with shared_flags.lock:
+            shared_flags.unfreeze = True
 
 # -------------------------
 # Helpers
@@ -79,14 +74,16 @@ class PoseProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         # Thread-safe copy of UI flags
-        mirror_flag = st.session_state.get("mirror", False)
-        unfreeze_flag = st.session_state.get("unfreeze", False)
+        with shared_flags.lock:
+            mirror_flag = shared_flags.mirror
+            unfreeze_flag = shared_flags.unfreeze
+            if unfreeze_flag:
+                shared_flags.unfreeze = False  # reset immediately
 
         # Handle Unfreeze
         if unfreeze_flag:
             self.is_frozen = False
             self.frozen_frame = None
-            st.session_state["unfreeze"] = False
 
         # Convert frame
         img = frame.to_ndarray(format="bgr24")
@@ -148,5 +145,8 @@ class PoseProcessor(VideoProcessorBase):
 webrtc_streamer(
     key="ape_index_stream",
     video_processor_factory=PoseProcessor,
-    media_stream_constraints={"video":{"width":{"ideal":1280},"height":{"ideal":720},"frameRate":{"ideal":30}}, "audio":False},
+    media_stream_constraints={
+        "video":{"width":{"ideal":1280},"height":{"ideal":720},"frameRate":{"ideal":30}},
+        "audio":False
+    },
 )
