@@ -49,15 +49,16 @@ shared_flags = st.session_state['shared_flags']
 
 # -------------------------
 st.title("Ape Index Measurement")
-st.write("Hold a T-pose to measure your ape index. Place an ArUco marker (4x4_50, 100mm) in view for accurate scaling.")
+st.write("Hold a T-pose to measure your ape index. Place an ArUco marker (4x4_50, 100mm) at the same distance from the camera as your body for accurate scaling.")
 
 # Buttons
 # -------------------------
-with st.sidebar:
-    st.title("Controls")
+cols = st.columns([1,1])
+with cols[0]:
     if st.button("Mirror Webcam", help="Flip the webcam image horizontally"):
         with shared_flags.lock:
             shared_flags.mirror = not shared_flags.mirror
+with cols[1]:
     if st.button("Unfreeze", help="Resume live video feed"):
         with shared_flags.lock:
             shared_flags.unfreeze = True
@@ -87,7 +88,8 @@ def detect_aruco(frame_bgr, display_frame, scale_x, scale_y):
     corners, ids, _ = aruco_detector.detectMarkers(gray)
     if ids is not None and len(ids) > 0:
         c = corners[0][0]
-        width_px = np.linalg.norm(c[0]-c[1])
+        sides = [np.linalg.norm(c[i]-c[(i+1)%4]) for i in range(4)]
+        width_px = np.mean(sides)
         c_scaled = c * [scale_x, scale_y]
         cv2.polylines(display_frame, [c_scaled.astype(int)], True, (255,255,0), 2)
         with shared_flags.lock:
@@ -160,6 +162,9 @@ class PoseProcessor(VideoProcessorBase):
         ape_index_avg = None
 
         if result.pose_landmarks:
+            lm_px_original = {i: to_pixel(lm, img.shape[1], img.shape[0]) for i, lm in enumerate(result.pose_landmarks.landmark)}
+            lm_px_display = {i: to_pixel(lm, DISPLAY_WIDTH, DISPLAY_HEIGHT) for i, lm in enumerate(result.pose_landmarks.landmark)}
+
             # Draw landmarks scaled to display frame
             for lm in result.pose_landmarks.landmark:
                 x = int(lm.x * DISPLAY_WIDTH)
@@ -174,15 +179,14 @@ class PoseProcessor(VideoProcessorBase):
                 cv2.line(display_frame, (x1, y1), (x2, y2), (255,255,255), 2)
 
             # T-pose detection
-            lm_px = {i: to_pixel(lm, DISPLAY_WIDTH, DISPLAY_HEIGHT) for i, lm in enumerate(result.pose_landmarks.landmark)}
-            if is_t_pose(lm_px, DISPLAY_HEIGHT, mirror_flag):
+            if is_t_pose(lm_px_display, DISPLAY_HEIGHT, mirror_flag):
                 t_pose_detected = True
-                l_wrist = lm_px[mp_pose.PoseLandmark.LEFT_WRIST.value]
-                r_wrist = lm_px[mp_pose.PoseLandmark.RIGHT_WRIST.value]
-                arm_span_px = distance(l_wrist,r_wrist)
-                head_y = lm_px[mp_pose.PoseLandmark.NOSE.value][1]
-                l_ankle = lm_px[mp_pose.PoseLandmark.LEFT_ANKLE.value]
-                r_ankle = lm_px[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
+                l_finger_original = lm_px_original[mp_pose.PoseLandmark.LEFT_INDEX.value]
+                r_finger_original = lm_px_original[mp_pose.PoseLandmark.RIGHT_INDEX.value]
+                arm_span_px = distance(l_finger_original, r_finger_original)
+                head_y = lm_px_original[mp_pose.PoseLandmark.NOSE.value][1]
+                l_ankle = lm_px_original[mp_pose.PoseLandmark.LEFT_ANKLE.value]
+                r_ankle = lm_px_original[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
                 ankle_mid = (l_ankle + r_ankle)/2
                 height_px = ankle_mid[1] - head_y
 
@@ -194,8 +198,12 @@ class PoseProcessor(VideoProcessorBase):
                     ape_index_avg = np.mean(self.ape_buffer)
 
                     # Draw lines
-                    cv2.line(display_frame, tuple(l_wrist.astype(int)), tuple(r_wrist.astype(int)), (255,0,0), 3)
-                    cv2.line(display_frame, (int((l_wrist[0]+r_wrist[0])/2), int(head_y)), tuple(ankle_mid.astype(int)), (0,0,255), 3)
+                    l_finger_display = lm_px_display[mp_pose.PoseLandmark.LEFT_INDEX.value]
+                    r_finger_display = lm_px_display[mp_pose.PoseLandmark.RIGHT_INDEX.value]
+                    head_y_display = lm_px_display[mp_pose.PoseLandmark.NOSE.value][1]
+                    ankle_mid_display = (lm_px_display[mp_pose.PoseLandmark.LEFT_ANKLE.value] + lm_px_display[mp_pose.PoseLandmark.RIGHT_ANKLE.value])/2
+                    cv2.line(display_frame, tuple(l_finger_display.astype(int)), tuple(r_finger_display.astype(int)), (255,0,0), 3)
+                    cv2.line(display_frame, (int((l_finger_display[0]+r_finger_display[0])/2), int(head_y_display)), tuple(ankle_mid_display.astype(int)), (0,0,255), 3)
 
                     # Overlay text
                     cv2.putText(display_frame, f"Ape Index: {ape_index_avg:.2f}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
