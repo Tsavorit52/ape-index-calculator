@@ -71,13 +71,15 @@ class PoseProcessor(VideoProcessorBase):
 
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
+        # Force HD
+        img = cv2.resize(img, (1280, 720))
 
         # Mirror if enabled
         if st.session_state.get("mirror", False):
             img = cv2.flip(img, 1)
 
-        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         h, w, _ = img.shape
+        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         result = self.pose.process(frame_rgb)
 
         t_pose_detected = False
@@ -159,8 +161,11 @@ webrtc_streamer(
     key="ape_index_stream",
     video_processor_factory=PoseProcessor,
     media_stream_constraints={
-        "video": {"width":{"ideal":1280}, "height":{"ideal":720}, "frameRate":{"ideal":30}},
+        "video": {
+            "width": {"ideal": 1280},
+            "height": {"ideal": 720},
+            "frameRate": {"ideal": 30}
+        },
         "audio": False
     },
-    video_frame_size=(1280,720)  # ensures HD streaming
 )
