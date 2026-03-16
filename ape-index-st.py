@@ -149,9 +149,17 @@ class PoseProcessor(VideoProcessorBase):
         if mirror_flag:
             img = cv2.flip(img, 1)
 
-        display_frame = cv2.resize(img, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
-        scale_x = DISPLAY_WIDTH / img.shape[1]
-        scale_y = DISPLAY_HEIGHT / img.shape[0]
+        # Determine display size based on input aspect ratio
+        if img.shape[1] >= img.shape[0]:  # Landscape
+            display_width = 1280
+            display_height = 720
+        else:  # Portrait
+            display_width = 720
+            display_height = 1280
+
+        display_frame = cv2.resize(img, (display_width, display_height))
+        scale_x = display_width / img.shape[1]
+        scale_y = display_height / img.shape[0]
 
         # Detect ArUco
         detect_aruco(img, display_frame, scale_x, scale_y)
@@ -163,23 +171,23 @@ class PoseProcessor(VideoProcessorBase):
 
         if result.pose_landmarks:
             lm_px_original = {i: to_pixel(lm, img.shape[1], img.shape[0]) for i, lm in enumerate(result.pose_landmarks.landmark)}
-            lm_px_display = {i: to_pixel(lm, DISPLAY_WIDTH, DISPLAY_HEIGHT) for i, lm in enumerate(result.pose_landmarks.landmark)}
+            lm_px_display = {i: to_pixel(lm, display_width, display_height) for i, lm in enumerate(result.pose_landmarks.landmark)}
 
             # Draw landmarks scaled to display frame
             for lm in result.pose_landmarks.landmark:
-                x = int(lm.x * DISPLAY_WIDTH)
-                y = int(lm.y * DISPLAY_HEIGHT)
+                x = int(lm.x * display_width)
+                y = int(lm.y * display_height)
                 cv2.circle(display_frame, (x, y), 5, (0,255,0), -1)
 
             # Draw connections
             for connection in mp_pose.POSE_CONNECTIONS:
                 start_idx, end_idx = connection
-                x1, y1 = int(result.pose_landmarks.landmark[start_idx].x * DISPLAY_WIDTH), int(result.pose_landmarks.landmark[start_idx].y * DISPLAY_HEIGHT)
-                x2, y2 = int(result.pose_landmarks.landmark[end_idx].x * DISPLAY_WIDTH), int(result.pose_landmarks.landmark[end_idx].y * DISPLAY_HEIGHT)
+                x1, y1 = int(result.pose_landmarks.landmark[start_idx].x * display_width), int(result.pose_landmarks.landmark[start_idx].y * display_height)
+                x2, y2 = int(result.pose_landmarks.landmark[end_idx].x * display_width), int(result.pose_landmarks.landmark[end_idx].y * display_height)
                 cv2.line(display_frame, (x1, y1), (x2, y2), (255,255,255), 2)
 
             # T-pose detection
-            if is_t_pose(lm_px_display, DISPLAY_HEIGHT, mirror_flag):
+            if is_t_pose(lm_px_display, display_height, mirror_flag):
                 t_pose_detected = True
                 l_finger_original = lm_px_original[mp_pose.PoseLandmark.LEFT_INDEX.value]
                 r_finger_original = lm_px_original[mp_pose.PoseLandmark.RIGHT_INDEX.value]
@@ -245,7 +253,7 @@ class PoseProcessor(VideoProcessorBase):
         # Overlay text
         with shared_flags.lock:
             if shared_flags.show_frozen_text or shared_flags.is_frozen:
-                cv2.putText(display_frame, "*Frozen*", (DISPLAY_WIDTH-180, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+                cv2.putText(display_frame, "*Frozen*", (display_width-180, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
         if mirror_flag:
             cv2.putText(display_frame, "Mirror ON", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
 
