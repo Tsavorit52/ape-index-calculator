@@ -92,7 +92,7 @@ class PoseProcessor(VideoProcessorBase):
         # Force HD
         img = cv2.resize(img, (1280, 720))
 
-        # Mirror if enabled
+        # Mirror dynamically from session state
         if st.session_state.get("mirror", False):
             img = cv2.flip(img, 1)
 
@@ -153,7 +153,7 @@ class PoseProcessor(VideoProcessorBase):
         else:
             self.pose_start_time = None
 
-        # Handle unfreeze
+        # Handle unfreeze dynamically
         if st.session_state.get("unfreeze", False):
             self.is_frozen = False
             self.frozen_frame = None
@@ -195,19 +195,21 @@ class PoseProcessor(VideoProcessorBase):
 
         return av.VideoFrame.from_ndarray(final_frame, format="bgr24")
 
-
 # -------------------------
-# UI
+# Initialize session state
 # -------------------------
 if "mirror" not in st.session_state:
     st.session_state["mirror"] = False
 if "unfreeze" not in st.session_state:
     st.session_state["unfreeze"] = False
 
+# -------------------------
+# UI Buttons
+# -------------------------
 cols = st.columns([3,1])
 with cols[1]:
     if st.button("Mirror Webcam"):
-        st.session_state["mirror"] = not st.session_state["mirror"]
+        st.session_state["mirror"] = not st.session_state.get("mirror", False)
     if st.button("Unfreeze"):
         st.session_state["unfreeze"] = True
 
