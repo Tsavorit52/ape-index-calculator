@@ -1,3 +1,4 @@
+libglib2.0-bin
 libgl1
 libsm6
 libxext6
