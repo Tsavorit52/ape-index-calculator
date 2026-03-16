@@ -13,12 +13,14 @@ import threading
 # -------------------------
 BUFFER_SIZE = 20
 FREEZE_DURATION = 1.5
+DISPLAY_WIDTH = 1280
+DISPLAY_HEIGHT = 720
 
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
 # -------------------------
-# Thread-safe shared flags
+# Thread-safe flags
 # -------------------------
 class SharedFlags:
     def __init__(self):
@@ -40,7 +42,6 @@ with cols[1]:
         with shared_flags.lock:
             shared_flags.unfreeze = True
 
-# Status text
 st.text(f"Mirror: {shared_flags.mirror}, Unfreeze: {shared_flags.unfreeze}")
 
 # -------------------------
@@ -53,7 +54,7 @@ def distance(a,b):
     return np.linalg.norm(a-b)
 
 def is_t_pose(lm_px, img_height, tol_ratio=0.1):
-    tol_px = img_height * tol_ratio  # tolerance relative to frame height
+    tol_px = img_height * tol_ratio
     l_sh = lm_px[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
     r_sh = lm_px[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
     l_wr = lm_px[mp_pose.PoseLandmark.LEFT_WRIST.value]
@@ -74,49 +75,50 @@ class PoseProcessor(VideoProcessorBase):
         self.pose_start_time = None
 
     def recv(self, frame):
-        # Thread-safe copy of flags
+        # Thread-safe flags
         with shared_flags.lock:
             mirror_flag = shared_flags.mirror
             unfreeze_flag = shared_flags.unfreeze
             if unfreeze_flag:
                 shared_flags.unfreeze = False
 
-        # Handle Unfreeze
+        # Unfreeze
         if unfreeze_flag:
             self.is_frozen = False
             self.frozen_frame = None
             print("Unfreeze triggered!")
 
-        # Convert frame
+        # Convert frame and resize for display
         img = frame.to_ndarray(format="bgr24")
         if mirror_flag:
             img = cv2.flip(img, 1)
 
-        # MediaPipe processing
+        display_frame = cv2.resize(img, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
+        scale_x = DISPLAY_WIDTH / img.shape[1]
+        scale_y = DISPLAY_HEIGHT / img.shape[0]
+
+        # MediaPipe
         result = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         t_pose_detected = False
         ape_index_avg = None
 
-        # Copy frame for drawing
-        final_frame = img.copy()
-
         if result.pose_landmarks:
-            # Scale landmarks to pixel coordinates
-            lm_px = {i: to_pixel(lm, final_frame.shape[1], final_frame.shape[0]) 
-                     for i, lm in enumerate(result.pose_landmarks.landmark)}
+            # Draw landmarks scaled to display frame
+            for lm in result.pose_landmarks.landmark:
+                x = int(lm.x * DISPLAY_WIDTH)
+                y = int(lm.y * DISPLAY_HEIGHT)
+                cv2.circle(display_frame, (x, y), 5, (0,255,0), -1)
 
-            # Draw landmarks with dynamic thickness
-            scale = final_frame.shape[0]/720
-            mp_drawing.draw_landmarks(
-                final_frame, 
-                result.pose_landmarks, 
-                mp_pose.POSE_CONNECTIONS,
-                landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0,255,0), thickness=int(2*scale), circle_radius=int(2*scale)),
-                connection_drawing_spec=mp_drawing.DrawingSpec(color=(0,0,255), thickness=int(2*scale))
-            )
+            # Draw connections
+            for connection in mp_pose.POSE_CONNECTIONS:
+                start_idx, end_idx = connection
+                x1, y1 = int(result.pose_landmarks.landmark[start_idx].x * DISPLAY_WIDTH), int(result.pose_landmarks.landmark[start_idx].y * DISPLAY_HEIGHT)
+                x2, y2 = int(result.pose_landmarks.landmark[end_idx].x * DISPLAY_WIDTH), int(result.pose_landmarks.landmark[end_idx].y * DISPLAY_HEIGHT)
+                cv2.line(display_frame, (x1, y1), (x2, y2), (0,0,255), 2)
 
             # T-pose detection
-            if is_t_pose(lm_px, final_frame.shape[0]):
+            lm_px = {i: to_pixel(lm, DISPLAY_WIDTH, DISPLAY_HEIGHT) for i, lm in enumerate(result.pose_landmarks.landmark)}
+            if is_t_pose(lm_px, DISPLAY_HEIGHT):
                 t_pose_detected = True
                 l_wrist = lm_px[mp_pose.PoseLandmark.LEFT_WRIST.value]
                 r_wrist = lm_px[mp_pose.PoseLandmark.RIGHT_WRIST.value]
@@ -140,31 +142,24 @@ class PoseProcessor(VideoProcessorBase):
                 self.pose_start_time = time.time()
             elif (time.time()-self.pose_start_time) >= FREEZE_DURATION:
                 if ape_index_avg is not None:
-                    self.frozen_frame = final_frame.copy()
+                    self.frozen_frame = display_frame.copy()
                 self.is_frozen = True
         else:
             self.pose_start_time = None
 
-        # Show frozen frame if frozen
         if self.is_frozen and self.frozen_frame is not None:
-            final_frame = self.frozen_frame.copy()
+            display_frame = self.frozen_frame.copy()
 
-        # Ensure contiguous frame for WebRTC
-        final_frame = np.ascontiguousarray(final_frame, dtype=np.uint8)
+        display_frame = np.ascontiguousarray(display_frame, dtype=np.uint8)
 
-        # Overlay indicators
-        scale = final_frame.shape[0]/720
+        # Overlay text
         if self.is_frozen:
-            cv2.putText(final_frame,"*Frozen*", (final_frame.shape[1]-180, int(40*scale)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1*scale,(0,0,255), int(2*scale))
+            cv2.putText(display_frame, "*Frozen*", (DISPLAY_WIDTH-180, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
         if mirror_flag:
-            cv2.putText(final_frame,"Mirror ON", (10, int(40*scale)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1*scale,(0,255,0), int(2*scale))
+            cv2.putText(display_frame, "Mirror ON", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
 
-        # Debug
-        print("Frame received, shape:", final_frame.shape)
-
-        return av.VideoFrame.from_ndarray(final_frame, format="bgr24")
+        print("Frame processed:", display_frame.shape)
+        return av.VideoFrame.from_ndarray(display_frame, format="bgr24")
 
 # -------------------------
 # Start WebRTC
@@ -173,7 +168,11 @@ webrtc_streamer(
     key="ape_index_stream",
     video_processor_factory=PoseProcessor,
     media_stream_constraints={
-        "video":{"frameRate":{"ideal":30}}, 
-        "audio":False
+        "video": {
+            "width": {"ideal": 1280},
+            "height": {"ideal": 720},
+            "frameRate": {"ideal": 30}
+        },
+        "audio": False
     },
 )
