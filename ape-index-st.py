@@ -17,7 +17,7 @@ st.title("🦍 Ape Index Calculator (Webcam HD)")
 APEX_MEAN = 1.0
 APEX_SD = 0.05
 BUFFER_SIZE = 20
-FREEZE_DURATION = 1.5  # seconds
+FREEZE_DURATION = 1.5  # seconds T-pose must hold to freeze
 
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
@@ -120,17 +120,24 @@ class PoseProcessor(VideoProcessorBase):
                              tuple(ankle_mid.astype(int)), (0,0,255), 3)
                     cv2.line(img, (int(left_x), int(l_wrist[1])), (int(right_x), int(r_wrist[1])), (255,0,0), 3)
 
-        # Freeze frame logic
+        # -------------------------
+        # Freeze logic
+        # -------------------------
         if t_pose_detected:
             if self.pose_start_time is None:
                 self.pose_start_time = time.time()
-            elif (time.time()-self.pose_start_time)>=FREEZE_DURATION:
+            elif (time.time()-self.pose_start_time) >= FREEZE_DURATION:
                 if ape_index_avg is not None:
                     self.frozen_frame = img.copy()
                 self.is_frozen = True
         else:
             self.pose_start_time = None
+
+        # Handle unfreeze
+        if st.session_state.get("unfreeze", False):
             self.is_frozen = False
+            self.frozen_frame = None
+            st.session_state["unfreeze"] = False
 
         final_frame = self.frozen_frame if self.is_frozen and self.frozen_frame is not None else img
 
@@ -141,18 +148,28 @@ class PoseProcessor(VideoProcessorBase):
             cv2.putText(final_frame, f"Ape Index: {ape_index_avg:.2f}", (30,40), cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
             cv2.putText(final_frame, f"Percentile: {percentile}th", (30,80), cv2.FONT_HERSHEY_SIMPLEX,0.8,(0,0,255),2)
 
+        # Draw * if frozen
+        if self.is_frozen:
+            cv2.putText(final_frame, "*", (final_frame.shape[1]-40, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+
         return av.VideoFrame.from_ndarray(final_frame, format="bgr24")
+
 
 # -------------------------
 # UI
 # -------------------------
 if "mirror" not in st.session_state:
     st.session_state["mirror"] = False
+if "unfreeze" not in st.session_state:
+    st.session_state["unfreeze"] = False
 
 cols = st.columns([3,1])
 with cols[1]:
     if st.button("Mirror Webcam"):
         st.session_state["mirror"] = not st.session_state["mirror"]
+    if st.button("Unfreeze"):
+        st.session_state["unfreeze"] = True
 
 # -------------------------
 # Start WebRTC
@@ -161,11 +178,7 @@ webrtc_streamer(
     key="ape_index_stream",
     video_processor_factory=PoseProcessor,
     media_stream_constraints={
-        "video": {
-            "width": {"ideal": 1280},
-            "height": {"ideal": 720},
-            "frameRate": {"ideal": 30}
-        },
+        "video": {"width":{"ideal":1280}, "height":{"ideal":720}, "frameRate":{"ideal":30}},
         "audio": False
     },
 )
