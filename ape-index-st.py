@@ -11,11 +11,8 @@ import threading
 # -------------------------
 # Constants
 # -------------------------
-APEX_MEAN = 1.0
-APEX_SD = 0.05
 BUFFER_SIZE = 20
 FREEZE_DURATION = 1.5
-MARKER_SIZE_M = 0.10
 
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
@@ -43,6 +40,9 @@ with cols[1]:
         with shared_flags.lock:
             shared_flags.unfreeze = True
 
+# Show status
+st.text(f"Mirror: {shared_flags.mirror}, Unfreeze: {shared_flags.unfreeze}")
+
 # -------------------------
 # Helpers
 # -------------------------
@@ -52,7 +52,8 @@ def to_pixel(landmark, width, height):
 def distance(a,b):
     return np.linalg.norm(a-b)
 
-def is_t_pose(lm_px, tol_px=80):
+def is_t_pose(lm_px, img_height, tol_ratio=0.1):
+    tol_px = img_height * tol_ratio  # tolerance relative to frame height
     l_sh = lm_px[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
     r_sh = lm_px[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
     l_wr = lm_px[mp_pose.PoseLandmark.LEFT_WRIST.value]
@@ -78,29 +79,32 @@ class PoseProcessor(VideoProcessorBase):
             mirror_flag = shared_flags.mirror
             unfreeze_flag = shared_flags.unfreeze
             if unfreeze_flag:
-                shared_flags.unfreeze = False  # reset immediately
+                shared_flags.unfreeze = False
 
-        # Handle Unfreeze
+        # Handle unfreeze
         if unfreeze_flag:
             self.is_frozen = False
             self.frozen_frame = None
+            print("Unfreeze triggered!")
 
         # Convert frame
         img = frame.to_ndarray(format="bgr24")
-        img = cv2.resize(img, (1280,720))
+        # Do not resize to avoid breaking detection
         if mirror_flag:
             img = cv2.flip(img,1)
 
-        # MediaPipe
+        # Process with MediaPipe
         result = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         t_pose_detected = False
         ape_index_avg = None
 
         if result.pose_landmarks:
-            lm_px = {i: to_pixel(lm, img.shape[1], img.shape[0]) for i, lm in enumerate(result.pose_landmarks.landmark)}
+            lm_px = {i: to_pixel(lm, img.shape[1], img.shape[0]) 
+                     for i, lm in enumerate(result.pose_landmarks.landmark)}
             mp_drawing.draw_landmarks(img, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
 
-            if is_t_pose(lm_px):
+            # T-pose detection scaled to frame height
+            if is_t_pose(lm_px, img.shape[0]):
                 t_pose_detected = True
                 # Arm span
                 l_wrist = lm_px[mp_pose.PoseLandmark.LEFT_WRIST.value]
@@ -118,6 +122,7 @@ class PoseProcessor(VideoProcessorBase):
                     self.arm_buffer.append(arm_span_px)
                     self.height_buffer.append(height_px)
                     ape_index_avg = np.mean(self.ape_buffer)
+                    print(f"T-pose detected, ape index avg: {ape_index_avg:.2f}")
 
         # Freeze logic
         if t_pose_detected:
@@ -134,8 +139,16 @@ class PoseProcessor(VideoProcessorBase):
 
         # Frozen indicator
         if self.is_frozen:
-            cv2.putText(final_frame,"*", (final_frame.shape[1]-40,40),
-                        cv2.FONT_HERSHEY_SIMPLEX,1,(255,255,255),2)
+            cv2.putText(final_frame,"*Frozen*", (final_frame.shape[1]-180,40),
+                        cv2.FONT_HERSHEY_SIMPLEX,1,(0,0,255),2)
+
+        # Mirror indicator
+        if mirror_flag:
+            cv2.putText(final_frame,"Mirror ON", (10,40),
+                        cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
+
+        # Debug print frame shape
+        print("Frame received, shape:", img.shape)
 
         return av.VideoFrame.from_ndarray(final_frame, format="bgr24")
 
@@ -146,7 +159,7 @@ webrtc_streamer(
     key="ape_index_stream",
     video_processor_factory=PoseProcessor,
     media_stream_constraints={
-        "video":{"width":{"ideal":1280},"height":{"ideal":720},"frameRate":{"ideal":30}},
+        "video":{"frameRate":{"ideal":30}}, 
         "audio":False
     },
 )
