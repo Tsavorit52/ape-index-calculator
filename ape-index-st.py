@@ -40,7 +40,7 @@ with cols[1]:
         with shared_flags.lock:
             shared_flags.unfreeze = True
 
-# Show status
+# Status text
 st.text(f"Mirror: {shared_flags.mirror}, Unfreeze: {shared_flags.unfreeze}")
 
 # -------------------------
@@ -74,14 +74,14 @@ class PoseProcessor(VideoProcessorBase):
         self.pose_start_time = None
 
     def recv(self, frame):
-        # Thread-safe copy of UI flags
+        # Thread-safe copy of flags
         with shared_flags.lock:
             mirror_flag = shared_flags.mirror
             unfreeze_flag = shared_flags.unfreeze
             if unfreeze_flag:
                 shared_flags.unfreeze = False
 
-        # Handle unfreeze
+        # Handle Unfreeze
         if unfreeze_flag:
             self.is_frozen = False
             self.frozen_frame = None
@@ -89,28 +89,38 @@ class PoseProcessor(VideoProcessorBase):
 
         # Convert frame
         img = frame.to_ndarray(format="bgr24")
-        # Do not resize to avoid breaking detection
         if mirror_flag:
-            img = cv2.flip(img,1)
+            img = cv2.flip(img, 1)
 
-        # Process with MediaPipe
+        # MediaPipe processing
         result = self.pose.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         t_pose_detected = False
         ape_index_avg = None
 
-        if result.pose_landmarks:
-            lm_px = {i: to_pixel(lm, img.shape[1], img.shape[0]) 
-                     for i, lm in enumerate(result.pose_landmarks.landmark)}
-            mp_drawing.draw_landmarks(img, result.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+        # Copy frame for drawing
+        final_frame = img.copy()
 
-            # T-pose detection scaled to frame height
-            if is_t_pose(lm_px, img.shape[0]):
+        if result.pose_landmarks:
+            # Scale landmarks to pixel coordinates
+            lm_px = {i: to_pixel(lm, final_frame.shape[1], final_frame.shape[0]) 
+                     for i, lm in enumerate(result.pose_landmarks.landmark)}
+
+            # Draw landmarks with dynamic thickness
+            scale = final_frame.shape[0]/720
+            mp_drawing.draw_landmarks(
+                final_frame, 
+                result.pose_landmarks, 
+                mp_pose.POSE_CONNECTIONS,
+                landmark_drawing_spec=mp_drawing.DrawingSpec(color=(0,255,0), thickness=int(2*scale), circle_radius=int(2*scale)),
+                connection_drawing_spec=mp_drawing.DrawingSpec(color=(0,0,255), thickness=int(2*scale))
+            )
+
+            # T-pose detection
+            if is_t_pose(lm_px, final_frame.shape[0]):
                 t_pose_detected = True
-                # Arm span
                 l_wrist = lm_px[mp_pose.PoseLandmark.LEFT_WRIST.value]
                 r_wrist = lm_px[mp_pose.PoseLandmark.RIGHT_WRIST.value]
                 arm_span_px = distance(l_wrist,r_wrist)
-                # Height
                 head_y = lm_px[mp_pose.PoseLandmark.NOSE.value][1]
                 l_ankle = lm_px[mp_pose.PoseLandmark.LEFT_ANKLE.value]
                 r_ankle = lm_px[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
@@ -128,27 +138,31 @@ class PoseProcessor(VideoProcessorBase):
         if t_pose_detected:
             if self.pose_start_time is None:
                 self.pose_start_time = time.time()
-            elif (time.time()-self.pose_start_time)>=FREEZE_DURATION:
+            elif (time.time()-self.pose_start_time) >= FREEZE_DURATION:
                 if ape_index_avg is not None:
-                    self.frozen_frame = img.copy()
+                    self.frozen_frame = final_frame.copy()
                 self.is_frozen = True
         else:
             self.pose_start_time = None
 
-        final_frame = self.frozen_frame if self.is_frozen and self.frozen_frame is not None else img
+        # Show frozen frame if frozen
+        if self.is_frozen and self.frozen_frame is not None:
+            final_frame = self.frozen_frame.copy()
 
-        # Frozen indicator
+        # Ensure contiguous frame for WebRTC
+        final_frame = np.ascontiguousarray(final_frame, dtype=np.uint8)
+
+        # Overlay indicators
+        scale = final_frame.shape[0]/720
         if self.is_frozen:
-            cv2.putText(final_frame,"*Frozen*", (final_frame.shape[1]-180,40),
-                        cv2.FONT_HERSHEY_SIMPLEX,1,(0,0,255),2)
-
-        # Mirror indicator
+            cv2.putText(final_frame,"*Frozen*", (final_frame.shape[1]-180, int(40*scale)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1*scale,(0,0,255), int(2*scale))
         if mirror_flag:
-            cv2.putText(final_frame,"Mirror ON", (10,40),
-                        cv2.FONT_HERSHEY_SIMPLEX,1,(0,255,0),2)
+            cv2.putText(final_frame,"Mirror ON", (10, int(40*scale)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1*scale,(0,255,0), int(2*scale))
 
-        # Debug print frame shape
-        print("Frame received, shape:", img.shape)
+        # Debug
+        print("Frame received, shape:", final_frame.shape)
 
         return av.VideoFrame.from_ndarray(final_frame, format="bgr24")
 
